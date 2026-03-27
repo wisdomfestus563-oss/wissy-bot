@@ -6,6 +6,7 @@ const { handleAI } = require('./handlers/aiHandler')
 const { handleStatus, forwardStatuses } = require('./handlers/statusHandler')
 const { scheduleStatuses } = require('./utils/statusPoster')
 const { getAuthState } = require('./utils/mongoStore')
+const qrcode = require('qrcode-terminal')
 require('dotenv').config()
 
 const OWNER = process.env.OWNER_NUMBER
@@ -20,13 +21,19 @@ async function connectToWhatsApp() {
   const sock = makeWASocket({
     version,
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: true,
+    printQRInTerminal: false,
     auth: state,
   })
 
   sock.ev.on('creds.update', saveCreds)
 
-  sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    if (qr) {
+      console.log('==== SCAN THIS QR CODE ====')
+      qrcode.generate(qr, { small: true })
+      console.log('===========================')
+    }
+
     if (connection === 'close') {
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
       if (shouldReconnect) connectToWhatsApp()
