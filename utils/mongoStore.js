@@ -1,46 +1,53 @@
 const mongoose = require('mongoose')
 
-const authSchema = new mongoose.Schema({
-  _id: String,
-  data: Object
-})
-
+const authSchema = new mongoose.Schema({ _id: String, data: Object })
 const Auth = mongoose.models.Auth || mongoose.model('Auth', authSchema)
 
-let isConnected = false
-
-async function connectDB() {
-  if (isConnected) return
-  await mongoose.connect(process.env.MONGODB_URI)
-  isConnected = true
-  console.log('MongoDB connected ✅')
-}
-
-async function getAuthState() {
-  await connectDB()
-
-  const state = { creds: {}, keys: {} }
-
-  try {
-    const saved = await Auth.findById('creds')
-    if (saved) state.creds = saved.data
-  } catch (e) {
-    console.log('No saved creds, fresh start')
+async function useMongoAuthState() {
+  const writeData = async (data, id) => {
+    await Auth.findByIdAndUpdate(id, { data }, { upsert: true, new: true })
   }
 
-  const saveCreds = async () => {
-    try {
-      await Auth.findByIdAndUpdate(
-        'creds',
-        { data: state.creds },
-        { upsert: true }
-      )
-    } catch (e) {
-      console.error('Save creds error:', e)
+  const readData = async (id) => {
+    const doc = await Auth.findById(id)
+    return doc ? doc.data : null
+  }
+
+  const removeData = async (id) => {
+    await Auth.deleteOne({ _id: id })
+  }
+
+  const creds = await readData('creds')
+
+  return {
+    state: {
+      creds: creds || {},
+      keys: {
+        get: async (type, ids) => {
+          const data = {}
+          for (const id of ids) {
+            const val = await readData(`${type}-${id}`)
+            data[id] = val
+          }
+          return data
+        },
+        set: async (data) => {
+          for (const [type, ids] of Object.entries(data)) {
+            for (const [id, val] of Object.entries(ids)) {
+              if (val) {
+                await writeData(val, `${type}-${id}`)
+              } else {
+                await removeData(`${type}-${id}`)
+              }
+            }
+          }
+        }
+      }
+    },
+    saveCreds: async () => {
+      await writeData(sock.authState.creds, 'creds')
     }
   }
-
-  return { state, saveCreds }
 }
 
-module.exports = { getAuthState }
+module.exports = { useMongoAuthState }
