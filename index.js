@@ -1,15 +1,15 @@
-const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys')
+const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion, initAuthCreds } = require('@whiskeysockets/baileys')
 const pino = require('pino')
 const mongoose = require('mongoose')
 const http = require('http')
 require('dotenv').config()
 
 const OWNER = process.env.OWNER_NUMBER
-let lastQR = null
+const PHONE = process.env.OWNER_NUMBER?.replace('@s.whatsapp.net', '')
+let pairingCode = null
 let isConnected = false
 let isConnecting = false
 
-// ========== MONGOOSE SETUP ==========
 const authSchema = new mongoose.Schema({ _id: String, data: Object })
 const Auth = mongoose.models.Auth || mongoose.model('Auth', authSchema)
 
@@ -19,7 +19,6 @@ async function connectDB() {
   console.log('MongoDB connected ✅')
 }
 
-// ========== MONGO AUTH STATE ==========
 async function useMongoAuthState() {
   const writeData = async (data, id) => {
     await Auth.findByIdAndUpdate(id, { data }, { upsert: true, new: true })
@@ -31,11 +30,9 @@ async function useMongoAuthState() {
   const removeData = async (id) => {
     await Auth.deleteOne({ _id: id })
   }
-
   const creds = await readData('creds')
-
   const state = {
-    creds: creds || {},
+    creds: creds || initAuthCreds(),
     keys: {
       get: async (type, ids) => {
         const data = {}
@@ -47,68 +44,52 @@ async function useMongoAuthState() {
       set: async (data) => {
         for (const [type, ids] of Object.entries(data)) {
           for (const [id, val] of Object.entries(ids || {})) {
-            if (val) {
-              await writeData(val, `${type}-${id}`)
-            } else {
-              await removeData(`${type}-${id}`)
-            }
+            if (val) await writeData(val, `${type}-${id}`)
+            else await removeData(`${type}-${id}`)
           }
         }
       }
     }
   }
-
   const saveCreds = async (newCreds) => {
     await writeData(newCreds, 'creds')
   }
-
   return { state, saveCreds }
 }
 
-// ========== WEB SERVER ==========
 const server = http.createServer((req, res) => {
-  if (req.url === '/qr') {
-    if (isConnected) {
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(`
-        <html>
-          <body style="text-align:center;font-family:sans-serif;padding:50px;background:#111;color:#fff">
-            <h1>✅ WhatsApp Connected!</h1>
-            <p>Wissy Bot is live and running.</p>
-          </body>
-        </html>
-      `)
-    } else if (lastQR) {
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(`
-        <html>
-          <head>
-            <title>Wissy Bot QR</title>
-            <meta http-equiv="refresh" content="25">
-          </head>
-          <body style="text-align:center;font-family:sans-serif;padding:40px;background:#111;color:#fff">
-            <h2>📱 Scan This QR Code With WhatsApp</h2>
-            <p>WhatsApp → Linked Devices → Link a Device</p>
-            <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(lastQR)}" style="border:10px solid white;border-radius:10px;margin:20px"/>
-            <p>⚠️ Page auto-refreshes every 25 seconds. Scan before it refreshes!</p>
-          </body>
-        </html>
-      `)
-    } else {
-      res.writeHead(200, { 'Content-Type': 'text/html' })
-      res.end(`
-        <html>
-          <head><meta http-equiv="refresh" content="5"></head>
-          <body style="text-align:center;font-family:sans-serif;padding:50px;background:#111;color:#fff">
-            <h2>⏳ Starting up...</h2>
-            <p>Refresh in 5 seconds</p>
-          </body>
-        </html>
-      `)
-    }
+  res.writeHead(200, { 'Content-Type': 'text/html' })
+  if (isConnected) {
+    res.end(`
+      <html>
+        <body style="text-align:center;font-family:sans-serif;padding:50px;background:#111;color:#fff">
+          <h1>✅ WhatsApp Connected!</h1>
+          <p>Wissy Bot is live 24/7 🔥</p>
+        </body>
+      </html>
+    `)
+  } else if (pairingCode) {
+    res.end(`
+      <html>
+        <head><meta http-equiv="refresh" content="10"></head>
+        <body style="text-align:center;font-family:sans-serif;padding:50px;background:#111;color:#fff">
+          <h2>📱 Enter This Code in WhatsApp</h2>
+          <p>WhatsApp → Linked Devices → Link a Device → Link with phone number</p>
+          <div style="font-size:60px;font-weight:bold;letter-spacing:10px;color:#25D366;margin:30px">${pairingCode}</div>
+          <p>Auto-refreshes every 10 seconds</p>
+        </body>
+      </html>
+    `)
   } else {
-    res.writeHead(200)
-    res.end('Wissy Bot Running ✅')
+    res.end(`
+      <html>
+        <head><meta http-equiv="refresh" content="5"></head>
+        <body style="text-align:center;font-family:sans-serif;padding:50px;background:#111;color:#fff">
+          <h2>⏳ Starting up...</h2>
+          <p>Refresh in 5 seconds</p>
+        </body>
+      </html>
+    `)
   }
 })
 
@@ -116,11 +97,9 @@ server.listen(process.env.PORT || 3000, () => {
   console.log('Web server running ✅')
 })
 
-// ========== WHATSAPP BOT ==========
 async function startBot() {
   if (isConnecting) return
   isConnecting = true
-
   try {
     await connectDB()
     const { state, saveCreds } = await useMongoAuthState()
@@ -132,40 +111,38 @@ async function startBot() {
       printQRInTerminal: false,
       auth: state,
       browser: ['Wissy Bot', 'Chrome', '1.0.0'],
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 60000,
-      keepAliveIntervalMs: 25000,
     })
 
-    sock.ev.on('creds.update', async (creds) => {
-      await saveCreds(creds)
-    })
+    sock.ev.on('creds.update', saveCreds)
 
-    sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
-      if (qr) {
-        lastQR = qr
-        isConnecting = false
-        console.log('QR ready — visit /qr to scan ✅')
-      }
+    if (!sock.authState.creds.registered) {
+      console.log('Requesting pairing code for:', PHONE)
+      setTimeout(async () => {
+        try {
+          pairingCode = await sock.requestPairingCode(PHONE)
+          console.log('Pairing code:', pairingCode)
+          isConnecting = false
+        } catch (e) {
+          console.error('Pairing code error:', e.message)
+          isConnecting = false
+        }
+      }, 3000)
+    }
 
+    sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
       if (connection === 'close') {
         isConnected = false
         isConnecting = false
         const code = lastDisconnect?.error?.output?.statusCode
-        console.log('Connection closed, code:', code)
-
-        if (code === DisconnectReason.loggedOut) {
-          console.log('Logged out — clear DB and restart')
-        } else {
+        if (code !== DisconnectReason.loggedOut) {
           console.log('Reconnecting in 5 seconds...')
           setTimeout(startBot, 5000)
         }
       }
-
       if (connection === 'open') {
         isConnected = true
         isConnecting = false
-        lastQR = null
+        pairingCode = null
         console.log('WhatsApp connected ✅')
       }
     })
@@ -193,7 +170,7 @@ async function startBot() {
           await handleAI(sock, msg, from, body)
         }
       } catch (e) {
-        console.error('Message handler error:', e.message)
+        console.error('Message error:', e.message)
       }
     })
 
